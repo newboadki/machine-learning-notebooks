@@ -69,8 +69,11 @@ def inference_models_from_lstm(model_info, latent_dim, max_text_len):
     return encoder_model, decoder_model
 
 
-def decode_sequence(input_seq, max_summary_len, inf_encoder_model,
-                    inf_decoder_model, target_word_index,
+def decode_sequence(input_seq,
+                    max_summary_len,
+                    inf_encoder_model,
+                    inf_decoder_model,
+                    target_word_index,
                     reverse_target_word_index):
     # Encode the input as state vectors.
     e_out, e_h, e_c = inf_encoder_model.predict(input_seq)
@@ -108,6 +111,100 @@ def decode_sequence(input_seq, max_summary_len, inf_encoder_model,
         e_h, e_c = h, c
 
     return decoded_sentence
+
+
+def gru_based_inference_models(model_info, latent_dim, max_text_len):
+    model = model_info['model']
+    encoder_input = model_info['encoder_input']
+    encoder_output = model_info['encoder_output']
+    encoder_state = model_info['encoder_state']
+    decoder_input = model_info['decoder_input']
+    decoder_state = model_info['decoder_state']
+    decoder_dense = model_info['decoder_dense']
+    y_embedding_layer = model_info['decoder_embedding_layer']
+    decoder_gru = model_info['decoder_gru']
+    
+    # Encoder Inference Model
+    encoder_model_inference = Model(encoder_input, [encoder_output, encoder_state])
+
+    # Decoder Inference
+    # Below tensors will hold the states of the previous time step
+    decoder_state = Input(shape=(latent_dim*2, ))
+    decoder_intermittent_state_input = Input(shape=(max_text_len, latent_dim*2))
+
+    # Get Embeddings of Decoder Sequence
+    decoder_embedding_inference = y_embedding_layer(decoder_input)
+
+    # Predict Next Word in Sequence, Set Initial State to State from Previous Time Step
+    decoder_output_inference, decoder_state_inference = decoder_gru(decoder_embedding_inference,
+                                                                    initial_state=[decoder_state])
+
+    # Attention Inference
+    attention_layer = AttentionLayer()
+    attention_out_inference, attention_state_inference = attention_layer([decoder_intermittent_state_input,
+                                                                          decoder_output_inference])
+    decoder_inference_concat = Concatenate(axis=-1)([decoder_output_inference,
+                                                     attention_out_inference])
+
+    # Dense Softmax Layer to Generate Prob. Dist. Over Target Vocabulary
+    decoder_output_inference = decoder_dense(decoder_inference_concat)
+
+    # Final Decoder Model
+    decoder_model_inference = Model([decoder_input, decoder_intermittent_state_input, decoder_state], 
+                                    [decoder_output_inference, decoder_state_inference])
+    
+    return encoder_model_inference, decoder_model_inference
+
+def gru_decode_sequence(input_sequence,
+                    max_summary_len,
+                    enc_inference_model, 
+                    dec_inference_model, 
+                    start_token, 
+                    end_token, 
+                    target_word_index,
+                    reverse_target_word_index):
+  """Text generation function via encoder / decoder network."""
+
+  # Encode Input as State Vectors.
+  encoder_output, encoder_state = enc_inference_model.predict(input_sequence)
+
+  # Generate Empty Target Sequence of Length 1.
+  target_sequence = np.zeros((1, 1))
+
+  # Choose 'start' as the first word of the target sequence
+  target_sequence[0, 0] = target_word_index[start_token]
+
+  decoded_sentence = ''
+  break_condition = False
+  while not break_condition:
+      token_output, decoder_state = dec_inference_model.predict([target_sequence, 
+                                                                 encoder_output,
+                                                                 encoder_state])
+
+      # Sample Token
+      sampled_token_index = np.argmax(token_output[0, -1, :])
+
+      if not sampled_token_index == 0:
+        sampled_token = reverse_target_word_index[sampled_token_index]
+
+        if not sampled_token == end_token:
+            decoded_sentence += ' ' + sampled_token
+
+        # Break Condition: Encounter Max Length / Find Stop Token.
+        if sampled_token == end_token or len(decoded_sentence.split()) >= (max_summary_len - 1):
+            break_condition = True
+
+        # Update Target Sequence (length 1).
+        target_sequence = np.zeros((1, 1))
+        target_sequence[0, 0] = sampled_token_index
+
+      else:
+        break_condition = True
+
+      # Update internal states
+      encoder_state = decoder_state
+
+  return decoded_sentence
 
 
 def seq2summary(input_seq, target_word_index, reverse_target_word_index):
