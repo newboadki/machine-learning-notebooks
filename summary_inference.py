@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from tensorflow.keras import Input, Model
 from tensorflow.keras.layers import Concatenate
-
+from attention import AttentionLayer
 
 def inference_models_from_lstm(model_info, latent_dim, max_text_len):
     """
